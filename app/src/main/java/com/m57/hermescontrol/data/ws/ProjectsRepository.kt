@@ -39,14 +39,17 @@ class ProjectsRepository(
     suspend fun list(): ProjectsResult<List<ProjectInfo>> =
         run { decodeProjects(caller.call(RpcMethods.PROJECTS_LIST, ProjectsListParams)) }
 
-    /** Git roots seen in past sessions that are not a project yet; empty on gateways without it. */
-    suspend fun discoveredRepos(): List<DiscoveredRepo> =
-        (
-            run {
-                val element = caller.call(RpcMethods.PROJECTS_DISCOVER_REPOS, ProjectsDiscoverReposParams())
-                OkHttpProvider.json.decodeFromJsonElement(DiscoveredReposResponse.serializer(), element).repos
-            } as? ProjectsResult.Ok
-        )?.value.orEmpty()
+    /** Unclaimed git roots; discovery errors remain distinct from an empty result (#1669). */
+    suspend fun discoveredRepos(scan: Boolean = false): ProjectsResult<List<DiscoveredRepo>> =
+        run {
+            val element =
+                caller.call(
+                    RpcMethods.PROJECTS_DISCOVER_REPOS,
+                    ProjectsDiscoverReposParams(scan = if (scan) true else null),
+                )
+            require(element is JsonObject && element.containsKey("repos")) { "Unexpected discovery payload" }
+            OkHttpProvider.json.decodeFromJsonElement(DiscoveredReposResponse.serializer(), element).repos
+        }
 
     suspend fun create(
         name: String,

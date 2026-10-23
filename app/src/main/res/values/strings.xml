@@ -206,7 +206,9 @@
     <string name="projects_empty_title">No projects yet</string>
     <string name="projects_empty_archived">No archived projects</string>
     <string name="projects_empty_subtitle">Group chats by codebase and start new chats inside a folder.</string>
-    <string name="projects_suggestions_title">From your sessions</string>
+    <string name="projects_suggestions_title">Discovered repositories</string>
+    <string name="projects_discovery_loading">Discovering repositories…</string>
+    <string name="projects_discovery_error">Could not discover repositories: %1$s</string>
     <string name="projects_delete_title">Delete %1$s?</string>
     <string name="projects_delete_message">The project and its folder list are removed. Chats are kept and fall back to their folder name in History.</string>
     <plurals name="projects_folder_count">

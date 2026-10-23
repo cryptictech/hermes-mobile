@@ -51,6 +51,18 @@ class PluginsProjectsTypesTest {
     }
 
     @Test
+    fun discoveryScanPreservesExplicitFalseAndOmitsUnset() {
+        fun encodeScan(scan: Boolean?) =
+            OkHttpProvider.json.encodeToJsonElement(
+                ProjectsDiscoverReposParams.serializer(),
+                ProjectsDiscoverReposParams(scan = scan),
+            )
+        assertEquals(buildJsonObject { }, encodeScan(null))
+        assertEquals(buildJsonObject { put("scan", true) }, encodeScan(true))
+        assertEquals(buildJsonObject { put("scan", false) }, encodeScan(false))
+    }
+
+    @Test
     fun descriptorsAreRegisteredWithContractNames() {
         assertTrue(RpcMethods.PLUGINS_MANAGE in RpcMethods.all)
         assertTrue(RpcMethods.PROJECTS_LIST in RpcMethods.all)

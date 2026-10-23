@@ -58,8 +58,9 @@ data class ProjectFolderParams(
     @SerialName("profile") val profile: String? = null,
 )
 
-/** `projects.discover_repos`: git roots the gateway already knows from sessions (no scan). */
+/** `projects.discover_repos`: known git roots, optionally scanning the remote host for repositories. */
 @Serializable
 data class ProjectsDiscoverReposParams(
     @SerialName("profile") val profile: String? = null,
+    @SerialName("scan") val scan: Boolean? = null,
 )

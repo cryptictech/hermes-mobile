@@ -1,5 +1,6 @@
 package com.m57.hermescontrol.data.ws
 
+import com.m57.hermescontrol.data.model.DiscoveredRepo
 import com.m57.hermescontrol.data.remote.OkHttpProvider
 import com.m57.hermescontrol.data.ws.contract.ProjectsArchiveParams
 import com.m57.hermescontrol.data.ws.contract.ProjectsCreateParams
@@ -10,6 +11,8 @@ import com.m57.hermescontrol.data.ws.contract.TypedRpcCaller
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -103,7 +106,32 @@ class ProjectsRepositoryTest {
         }
 
     @Test
-    fun discoveredReposFallBackToEmptyOnError() =
+    fun discoveryRequestsRemoteScanOnlyWhenRequested() =
+        runTest {
+            val caller =
+                RecordingCaller {
+                    OkHttpProvider.json.parseToJsonElement("""{"repos":[{"root":"/remote/app","label":"app"}]}""")
+                }
+            val repository = ProjectsRepository(caller)
+            assertEquals(
+                ProjectsResult.Ok(listOf(DiscoveredRepo("/remote/app", "app"))),
+                repository.discoveredRepos(scan = true),
+            )
+            repository.discoveredRepos()
+            assertEquals("projects.discover_repos", caller.calls.first().first)
+            assertEquals(buildJsonObject { put("scan", true) }, caller.calls.first().second)
+            assertEquals(buildJsonObject { }, caller.calls.last().second)
+        }
+
+    @Test
+    fun malformedDiscoveryPayloadIsNotAnEmptySuccess() =
+        runTest {
+            val result = ProjectsRepository(RecordingCaller()).discoveredRepos()
+            assertEquals(ProjectsResult.Failed("Unexpected discovery payload"), result)
+        }
+
+    @Test
+    fun discoveredReposPreserveGatewayError() =
         runTest {
             val caller =
                 object : TypedRpcCaller {
@@ -112,7 +140,10 @@ class ProjectsRepositoryTest {
                         params: P,
                     ): R = throw HermesWsClient.HermesRpcException("method not found", -32601)
                 }
-            assertTrue(ProjectsRepository(caller).discoveredRepos().isEmpty())
+            assertEquals(
+                ProjectsResult.Failed("method not found"),
+                ProjectsRepository(caller).discoveredRepos(),
+            )
         }
 
     @Test

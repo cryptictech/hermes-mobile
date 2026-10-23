@@ -13,7 +13,6 @@ import com.m57.hermescontrol.data.ws.ProjectsResult
 import com.m57.hermescontrol.data.ws.WsEvent
 import com.m57.hermescontrol.ui.common.ToastHost
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -39,7 +38,9 @@ data class ProjectsUiState(
     val isLoading: Boolean = true,
     val errorMessage: String? = null,
     val projects: List<ProjectInfo> = emptyList(),
-    // Git roots from past sessions that are not a project yet: one-tap "Create project" suggestions.
+    val isDiscovering: Boolean = false,
+    val discoveryError: String? = null,
+    // Discovered git roots that are not a project yet: one-tap "Create project" suggestions.
     val suggestions: List<DiscoveredRepo> = emptyList(),
     val filter: ProjectsFilter = ProjectsFilter.ACTIVE,
     val query: String = "",
@@ -76,6 +77,7 @@ class ProjectsViewModel(
     val uiState: StateFlow<ProjectsUiState> = _uiState.asStateFlow()
     private var loadJob: Job? = null
     private var refreshJob: Job? = null
+    private var discoveryJob: Job? = null
     private var scopeGeneration: Long = 0L
 
     init {
@@ -87,6 +89,8 @@ class ProjectsViewModel(
                 refreshJob = null
                 loadJob?.cancel()
                 loadJob = null
+                discoveryJob?.cancel()
+                discoveryJob = null
                 _uiState.value = ProjectsUiState()
                 load()
             }
@@ -118,60 +122,84 @@ class ProjectsViewModel(
         refreshJob =
             viewModelScope.launch {
                 delay(BURST_DEBOUNCE_MS)
-                val reposDeferred = async { repository.discoveredRepos() }
-                val result = repository.list()
-                val repos = reposDeferred.await()
                 if (currentGeneration == scopeGeneration && scopes.value == expectedScope) {
-                    when (result) {
-                        is ProjectsResult.Ok -> {
-                            applyProjects(result.value, repos)
-                        }
-
-                        is ProjectsResult.Failed -> {
-                            // Silent refresh: retain existing data, do not surface error
-                        }
-                    }
+                    refresh(scan = false, silent = true)
                 }
             }
     }
 
-    fun load() {
+    /** Initial load and explicit refresh scan the remote host (#1669). */
+    fun load() = refresh(scan = true)
+
+    private fun refresh(
+        scan: Boolean,
+        silent: Boolean = false,
+    ) {
         val currentGeneration = scopeGeneration
         val currentScope = scopes.value
         loadJob?.cancel()
-        _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        if (!silent) _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         loadJob =
             viewModelScope.launch {
-                val reposDeferred = async { repository.discoveredRepos() }
                 val result = repository.list()
-                val repos = reposDeferred.await()
                 if (currentGeneration == scopeGeneration && scopes.value == currentScope) {
                     when (result) {
                         is ProjectsResult.Ok -> {
-                            applyProjects(result.value, repos)
+                            // Publish saved projects immediately, even while discovery is pending.
+                            _uiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    errorMessage = null,
+                                    projects = result.value,
+                                    suggestions = unownedRepos(it.suggestions, result.value),
+                                )
+                            }
                         }
 
                         is ProjectsResult.Failed -> {
-                            _uiState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                            _uiState.update {
+                                it.copy(
+                                    isLoading = false,
+                                    errorMessage = if (silent) it.errorMessage else result.message,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        // Change events must neither start filesystem scans nor cancel an ongoing scan.
+        if (!scan && discoveryJob?.isActive == true) return
+        discoveryJob?.cancel()
+        _uiState.update { it.copy(isDiscovering = true, discoveryError = null) }
+        discoveryJob =
+            viewModelScope.launch {
+                val result = repository.discoveredRepos(scan = scan)
+                if (currentGeneration == scopeGeneration && scopes.value == currentScope) {
+                    _uiState.update {
+                        when (result) {
+                            is ProjectsResult.Ok -> {
+                                it.copy(
+                                    isDiscovering = false,
+                                    discoveryError = null,
+                                    suggestions = unownedRepos(result.value, it.projects),
+                                )
+                            }
+
+                            is ProjectsResult.Failed -> {
+                                it.copy(isDiscovering = false, discoveryError = result.message)
+                            }
                         }
                     }
                 }
             }
     }
 
-    private fun applyProjects(
-        projects: List<ProjectInfo>,
+    private fun unownedRepos(
         repos: List<DiscoveredRepo>,
-    ) {
+        projects: List<ProjectInfo>,
+    ): List<DiscoveredRepo> {
         val owned = projects.flatMap { project -> project.folders.map { it.path } }.toSet()
-        _uiState.update {
-            it.copy(
-                isLoading = false,
-                errorMessage = null,
-                projects = projects,
-                suggestions = repos.filter { repo -> repo.root !in owned },
-            )
-        }
+        return repos.filter { it.root !in owned }
     }
 
     fun setFilter(filter: ProjectsFilter) = _uiState.update { it.copy(filter = filter) }
@@ -219,7 +247,7 @@ class ProjectsViewModel(
             when (result) {
                 is ProjectsResult.Ok -> {
                     _uiState.update { it.copy(isSaving = false, editor = null) }
-                    load()
+                    refresh(scan = false)
                 }
 
                 // Keep the sheet open with the gateway's reason (duplicate folder, bad name, …).
@@ -279,7 +307,7 @@ class ProjectsViewModel(
                     toastMessage = (result as? ProjectsResult.Failed)?.message,
                 )
             }
-            load()
+            refresh(scan = false)
         }
     }
 

@@ -91,7 +91,7 @@ fun ProjectsScreen(
         modifier = modifier,
         title = { Text(stringResource(R.string.screen_projects)) },
         navigationIcon = onOpenDrawer?.let { NavIcon.Menu(it) },
-        isRefreshing = state.isLoading && state.projects.isNotEmpty(),
+        isRefreshing = (state.isLoading || state.isDiscovering) && state.projects.isNotEmpty(),
         onRefresh = viewModel::load,
         actions = {
             IconButton(onClick = { viewModel.startCreate() }) {
@@ -201,7 +201,36 @@ private fun ProjectsList(
             }
         }
 
-        if (visible.isEmpty()) {
+        if (showSuggestions) {
+            if (state.isDiscovering) {
+                item(key = "discovery-loading") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(LocalSpacing.current.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(LocalSpacing.current.md),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        Text(stringResource(R.string.projects_discovery_loading))
+                    }
+                }
+            }
+            state.discoveryError?.let { message ->
+                item(key = "discovery-error") {
+                    Column(modifier = Modifier.fillMaxWidth().padding(LocalSpacing.current.md)) {
+                        Text(
+                            stringResource(R.string.projects_discovery_error, message),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        TextButton(onClick = viewModel::load) {
+                            Text(stringResource(R.string.action_retry))
+                        }
+                    }
+                }
+            }
+        }
+
+        val discoveryHasContent = state.isDiscovering || state.discoveryError != null || state.suggestions.isNotEmpty()
+        if (visible.isEmpty() && !(showSuggestions && discoveryHasContent)) {
             item(key = "empty") {
                 EmptyState(
                     title =

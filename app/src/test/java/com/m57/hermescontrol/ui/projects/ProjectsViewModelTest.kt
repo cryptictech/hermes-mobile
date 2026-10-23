@@ -45,7 +45,7 @@ class ProjectsViewModelTest {
     fun setUp() {
         Dispatchers.setMain(dispatcher)
         coEvery { repo.list() } returns ProjectsResult.Ok(listOf(app, old))
-        coEvery { repo.discoveredRepos() } returns emptyList()
+        coEvery { repo.discoveredRepos(any()) } returns ProjectsResult.Ok(emptyList())
     }
 
     @After
@@ -57,6 +57,119 @@ class ProjectsViewModelTest {
             scopes = MutableStateFlow<DataScope?>(null),
             events = emptyFlow<WsEvent>(),
         )
+
+    @Test
+    fun savedProjectsAppearWhileRemoteScanIsPending() =
+        runTest(dispatcher) {
+            val pending = CompletableDeferred<ProjectsResult<List<DiscoveredRepo>>>()
+            coEvery { repo.discoveredRepos(true) } coAnswers { pending.await() }
+            val vm = viewModel()
+            dispatcher.scheduler.runCurrent()
+
+            assertEquals(listOf(app, old), vm.uiState.value.projects)
+            assertEquals(false, vm.uiState.value.isLoading)
+            assertTrue(vm.uiState.value.isDiscovering)
+
+            pending.complete(ProjectsResult.Ok(listOf(DiscoveredRepo("/remote/new", "new"))))
+            advanceUntilIdle()
+            assertEquals(
+                listOf("/remote/new"),
+                vm.uiState.value.suggestions
+                    .map { it.root },
+            )
+            assertEquals(false, vm.uiState.value.isDiscovering)
+        }
+
+    @Test
+    fun discoveryFinishingBeforeProjectListStillHidesOwnedRepos() =
+        runTest(dispatcher) {
+            val pending = CompletableDeferred<ProjectsResult<List<ProjectInfo>>>()
+            coEvery { repo.list() } coAnswers { pending.await() }
+            coEvery { repo.discoveredRepos(true) } returns
+                ProjectsResult.Ok(listOf(DiscoveredRepo("/code/app"), DiscoveredRepo("/remote/new")))
+            val vm = viewModel()
+            dispatcher.scheduler.runCurrent()
+
+            pending.complete(ProjectsResult.Ok(listOf(app)))
+            advanceUntilIdle()
+            assertEquals(
+                listOf("/remote/new"),
+                vm.uiState.value.suggestions
+                    .map { it.root },
+            )
+        }
+
+    @Test
+    fun projectListFailureDoesNotWaitForDiscovery() =
+        runTest(dispatcher) {
+            val pending = CompletableDeferred<ProjectsResult<List<DiscoveredRepo>>>()
+            coEvery { repo.list() } returns ProjectsResult.Failed("list failed")
+            coEvery { repo.discoveredRepos(true) } coAnswers { pending.await() }
+            val vm = viewModel()
+            dispatcher.scheduler.runCurrent()
+
+            assertEquals("list failed", vm.uiState.value.errorMessage)
+            assertEquals(false, vm.uiState.value.isLoading)
+            pending.complete(ProjectsResult.Ok(emptyList()))
+            advanceUntilIdle()
+            assertEquals("list failed", vm.uiState.value.errorMessage)
+        }
+
+    @Test
+    fun discoveryFailureKeepsSavedProjectsAndCanBeRetried() =
+        runTest(dispatcher) {
+            coEvery { repo.discoveredRepos(true) } returns ProjectsResult.Failed("scan failed")
+            val vm = viewModel()
+            advanceUntilIdle()
+
+            assertEquals(listOf(app, old), vm.uiState.value.projects)
+            assertNull(vm.uiState.value.errorMessage)
+            assertEquals("scan failed", vm.uiState.value.discoveryError)
+            assertEquals(false, vm.uiState.value.isDiscovering)
+
+            coEvery { repo.discoveredRepos(true) } returns ProjectsResult.Ok(emptyList())
+            vm.load()
+            advanceUntilIdle()
+            assertNull(vm.uiState.value.discoveryError)
+            coVerify(exactly = 2) { repo.discoveredRepos(true) }
+        }
+
+    @Test
+    fun changeEventsUseCachedDiscoveryWithoutScanning() =
+        runTest(dispatcher) {
+            val events = MutableSharedFlow<WsEvent>()
+            ProjectsViewModel(repo, MutableStateFlow<DataScope?>(null), events)
+            advanceUntilIdle()
+            coVerify(exactly = 1) { repo.discoveredRepos(true) }
+
+            events.emit(WsEvent.ChangeEvent(type = ChangeEvents.PROJECTS, data = null))
+            advanceUntilIdle()
+            coVerify(exactly = 1) { repo.discoveredRepos(false) }
+            coVerify(exactly = 1) { repo.discoveredRepos(true) }
+        }
+
+    @Test
+    fun changeEventDoesNotCancelPendingRemoteScan() =
+        runTest(dispatcher) {
+            val pending = CompletableDeferred<ProjectsResult<List<DiscoveredRepo>>>()
+            val events = MutableSharedFlow<WsEvent>()
+            coEvery { repo.discoveredRepos(true) } coAnswers { pending.await() }
+            val vm = ProjectsViewModel(repo, MutableStateFlow<DataScope?>(null), events)
+            dispatcher.scheduler.runCurrent()
+
+            events.emit(WsEvent.ChangeEvent(type = ChangeEvents.PROJECTS, data = null))
+            advanceUntilIdle()
+            coVerify(exactly = 2) { repo.list() }
+            coVerify(exactly = 0) { repo.discoveredRepos(false) }
+
+            pending.complete(ProjectsResult.Ok(listOf(DiscoveredRepo("/remote/new"))))
+            advanceUntilIdle()
+            assertEquals(
+                listOf("/remote/new"),
+                vm.uiState.value.suggestions
+                    .map { it.root },
+            )
+        }
 
     @Test
     fun activeAndArchivedFiltersSplitTheList() =
@@ -157,10 +270,12 @@ class ProjectsViewModelTest {
     @Test
     fun suggestionsHideReposAlreadyInAProject() =
         runTest(dispatcher) {
-            coEvery { repo.discoveredRepos() } returns
-                listOf(
-                    DiscoveredRepo("/code/app", "app", 3),
-                    DiscoveredRepo("/opt/monit", "monit", 2),
+            coEvery { repo.discoveredRepos(any()) } returns
+                ProjectsResult.Ok(
+                    listOf(
+                        DiscoveredRepo("/code/app", "app", 3),
+                        DiscoveredRepo("/opt/monit", "monit", 2),
+                    ),
                 )
             val vm = viewModel()
             advanceUntilIdle()
@@ -302,11 +417,11 @@ class ProjectsViewModelTest {
 
             val oldProjects = listOf(ProjectInfo(id = "p_old", name = "Old Project"))
             val oldDiscoveredRepos = listOf(DiscoveredRepo("/repo/old", "old", 1))
-            val pendingOldDiscovered = CompletableDeferred<List<DiscoveredRepo>>()
+            val pendingOldDiscovered = CompletableDeferred<ProjectsResult<List<DiscoveredRepo>>>()
 
             // Scope 1: repo.list() succeeds immediately, but discoveredRepos() stays pending
             coEvery { repo.list() } returns ProjectsResult.Ok(oldProjects)
-            coEvery { repo.discoveredRepos() } coAnswers { pendingOldDiscovered.await() }
+            coEvery { repo.discoveredRepos(any()) } coAnswers { pendingOldDiscovered.await() }
 
             val vm =
                 ProjectsViewModel(
@@ -321,12 +436,12 @@ class ProjectsViewModelTest {
             // Change scope before discoveredRepos() finishes
             val newProjects = listOf(ProjectInfo(id = "p_new", name = "New Project"))
             coEvery { repo.list() } returns ProjectsResult.Ok(newProjects)
-            coEvery { repo.discoveredRepos() } returns emptyList()
+            coEvery { repo.discoveredRepos(any()) } returns ProjectsResult.Ok(emptyList())
 
             scopesFlow.value = scope2
 
             // Now release the old discoveredRepos call
-            pendingOldDiscovered.complete(oldDiscoveredRepos)
+            pendingOldDiscovered.complete(ProjectsResult.Ok(oldDiscoveredRepos))
             advanceUntilIdle()
 
             // None of old projects or suggestions from old scope should be published in new scope
@@ -335,6 +450,7 @@ class ProjectsViewModelTest {
             assertEquals(listOf("p_new"), state.visibleProjects.map { it.id })
             assertTrue(state.suggestions.none { it.root == "/repo/old" })
             assertTrue(state.suggestions.isEmpty())
+            coVerify(exactly = 2) { repo.discoveredRepos(true) }
         }
 
     @Test
@@ -348,7 +464,7 @@ class ProjectsViewModelTest {
             val pendingStaleList = CompletableDeferred<ProjectsResult<List<ProjectInfo>>>()
 
             coEvery { repo.list() } coAnswers { pendingStaleList.await() }
-            coEvery { repo.discoveredRepos() } returns emptyList()
+            coEvery { repo.discoveredRepos(any()) } returns ProjectsResult.Ok(emptyList())
 
             val vm =
                 ProjectsViewModel(

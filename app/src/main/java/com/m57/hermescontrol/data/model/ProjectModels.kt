@@ -39,7 +39,7 @@ data class ProjectFolder(
     val isPrimary: Boolean? = null,
 )
 
-/** A git root the gateway learned from past sessions (`projects.discover_repos`), not yet a project. */
+/** A git root discovered from sessions or a remote scan (`projects.discover_repos`), not yet a project. */
 @Serializable
 data class DiscoveredRepo(
     val root: String,
